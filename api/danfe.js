@@ -1,8 +1,4 @@
 // netlify/functions/danfe.js
-// Proxy para POST https://consultadanfe.com/api/v1/danfe
-// Repassa o multipart/form-data recebido do frontend (arquivos XML) direto
-// para a API, sem reconstruir o form — apenas encaminha o corpo bruto.
-
 const API_URL = 'https://consultadanfe.com/api/v1/danfe';
 
 exports.handler = async (event) => {
@@ -10,6 +6,7 @@ exports.handler = async (event) => {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Expose-Headers': 'X-Error-Code, X-XML-Recovery, X-Envelope-Origem, Retry-After',
   };
 
   if (event.httpMethod === 'OPTIONS') {
@@ -38,9 +35,11 @@ exports.handler = async (event) => {
 
     const arrayBuffer = await upstream.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
+    
     const errorCode = upstream.headers.get('X-Error-Code');
     const xmlRecovery = upstream.headers.get('X-XML-Recovery');
     const envelopeOrigem = upstream.headers.get('X-Envelope-Origem');
+    const retryAfter = upstream.headers.get('Retry-After');
 
     return {
       statusCode: upstream.status,
@@ -50,6 +49,7 @@ exports.handler = async (event) => {
         ...(errorCode ? { 'X-Error-Code': errorCode } : {}),
         ...(xmlRecovery ? { 'X-XML-Recovery': xmlRecovery } : {}),
         ...(envelopeOrigem ? { 'X-Envelope-Origem': envelopeOrigem } : {}),
+        ...(retryAfter ? { 'Retry-After': retryAfter } : {}),
       },
       body: buffer.toString('base64'),
       isBase64Encoded: true,
