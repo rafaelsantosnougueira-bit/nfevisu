@@ -766,6 +766,7 @@ keysInput.addEventListener('input', updateChaveUi);
 clearChaveBtn.addEventListener('click', ()=>{ keysInput.value=''; updateChaveUi(); });
 
 // ---------- API calls ----------
+// ---------- API calls ----------
 async function consultaPorChave(chave){
   const res = await fetch(`${FN_BASE}/consulta`, {
     method:'POST',
@@ -773,6 +774,8 @@ async function consultaPorChave(chave){
     body: JSON.stringify({ chave, format:'json' })
   });
   const errorCode = res.headers.get('X-Error-Code');
+  const retryAfter = res.headers.get('Retry-After'); // Captura o tempo de pausa
+  
   let data = null;
   try { data = await res.json(); } catch(_e){}
   if (!res.ok){
@@ -780,6 +783,7 @@ async function consultaPorChave(chave){
     const err = new Error(msg);
     err.code = errorCode || data?.error;
     err.status = res.status;
+    err.retryAfter = retryAfter; // Guarda o tempo no erro
     throw err;
   }
   return data;
@@ -793,6 +797,8 @@ async function danfeViaXml(file){
   const errorCode = res.headers.get('X-Error-Code');
   const xmlRecovery = res.headers.get('X-XML-Recovery');
   const envelopeOrigem = res.headers.get('X-Envelope-Origem');
+  const retryAfter = res.headers.get('Retry-After'); // Captura o tempo de pausa
+  
   let data = null;
   try { data = await res.json(); } catch(_e){}
   if (!res.ok){
@@ -800,11 +806,11 @@ async function danfeViaXml(file){
     const err = new Error(msg);
     err.code = errorCode || data?.error;
     err.status = res.status;
+    err.retryAfter = retryAfter; // Guarda o tempo no erro
     throw err;
   }
   return { data, xmlRecovery, envelopeOrigem };
 }
-
 // ---------- Processing pipeline ----------
   // ---------- Pré-cache na API ----------
 async function iniciarPreCache(chaves) {
@@ -870,6 +876,58 @@ async function processAll(){
       status: 'pending', tipo:null, chave: job.type==='chave' ? job.chave : null,
       pdfBase64:null, blobUrl:null, message:'Consultando…', flags:[]
     };
+    results.push(partial);
+    renderResults();
+
+    let sucesso = false;
+    let tentativas = 0;
+
+    // Loop que protege contra o 429: se tomar rate limit, pausa a fila e retenta a mesma nota
+    while (!sucesso && tentativas < 3) {
+      try{
+        if (job.type === 'chave'){
+          const data = await consultaPorChave(job.chave);
+          applySuccess(partial, data);
+        } else {
+          const { data, xmlRecovery, envelopeOrigem } = await danfeViaXml(job.file);
+          applySuccess(partial, data);
+          if (xmlRecovery) partial.flags.push('XML recuperado via chave');
+          if (envelopeOrigem) partial.flags.push(`Envelope: ${envelopeOrigem}`);
+        }
+        sucesso = true; // Se chegou aqui, não deu erro!
+      } catch(err){
+        if (err.status === 429) {
+          // A API mandou parar. Lemos os segundos que ela pediu ou usamos 15s de padrão
+          const waitSecs = parseInt(err.retryAfter || '15', 10);
+          
+          partial.message = `Limite! Pausando fila por ${waitSecs}s...`;
+          progressText.textContent = `Aguardando liberação da API (${waitSecs}s)...`;
+          renderResults();
+          
+          // Pausa a execução de TUDO por X segundos
+          await new Promise(r => setTimeout(r, waitSecs * 1000));
+          
+          tentativas++;
+          partial.message = 'Retentando...';
+          progressText.textContent = 'Processando...';
+        } else {
+          // Se for outro erro (ex: chave inválida, 404), marca como erro e sai do while
+          partial.status = 'err';
+          partial.message = err.message || 'Falha ao processar';
+          break; 
+        }
+      }
+    }
+
+    renderResults();
+    progressFill.style.width = `${Math.round(((i+1)/jobs.length)*100)}%`;
+    progressCount.textContent = `${i+1} / ${jobs.length}`;
+    
+    // Intervalo de segurança apenas se deu sucesso
+    if (i < jobs.length-1 && partial.status === 'ok') {
+        await new Promise(r=>setTimeout(r, 220)); 
+    }
+  }
     results.push(partial);
     renderResults();
 
