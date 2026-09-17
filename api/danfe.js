@@ -1,64 +1,32 @@
-// netlify/functions/danfe.js
-// Proxy para POST https://consultadanfe.com/api/v1/danfe
-// Repassa o multipart/form-data recebido do frontend (arquivos XML) direto
-// para a API, sem reconstruir o form — apenas encaminha o corpo bruto.
+export const config = { runtime: 'edge' };
 
-const API_URL = 'https://consultadanfe.com/api/v1/danfe';
-
-exports.handler = async (event) => {
+export default async function handler(req) {
   const corsHeaders = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Expose-Headers': 'X-Error-Code, X-XML-Recovery, X-Envelope-Origem, Retry-After'
   };
 
-  if (event.httpMethod === 'OPTIONS') {
-    return { statusCode: 204, headers: corsHeaders, body: '' };
-  }
-
-  if (event.httpMethod !== 'POST') {
-    return {
-      statusCode: 405,
-      headers: corsHeaders,
-      body: JSON.stringify({ message: 'Método não permitido' }),
-    };
-  }
+  if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: corsHeaders });
 
   try {
-    const contentType = event.headers['content-type'] || event.headers['Content-Type'];
-    const bodyBuffer = event.isBase64Encoded
-      ? Buffer.from(event.body, 'base64')
-      : Buffer.from(event.body, 'utf8');
-
-    const upstream = await fetch(API_URL, {
+    const upstream = await fetch('https://consultadanfe.com/api/v1/danfe', {
       method: 'POST',
-      headers: { 'Content-Type': contentType },
-      body: bodyBuffer,
+      // Mantém o boundary original do multipart/form-data enviado pelo navegador
+      headers: { 'Content-Type': req.headers.get('Content-Type') }, 
+      body: req.body 
     });
 
-    const arrayBuffer = await upstream.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-    const errorCode = upstream.headers.get('X-Error-Code');
-    const xmlRecovery = upstream.headers.get('X-XML-Recovery');
-    const envelopeOrigem = upstream.headers.get('X-Envelope-Origem');
+    const responseHeaders = new Headers(corsHeaders);
+    responseHeaders.set('Content-Type', upstream.headers.get('Content-Type') || 'application/json');
+    
+    ['X-Error-Code', 'X-XML-Recovery', 'X-Envelope-Origem', 'Retry-After'].forEach(h => {
+      if (upstream.headers.has(h)) responseHeaders.set(h, upstream.headers.get(h));
+    });
 
-    return {
-      statusCode: upstream.status,
-      headers: {
-        ...corsHeaders,
-        'Content-Type': upstream.headers.get('Content-Type') || 'application/json',
-        ...(errorCode ? { 'X-Error-Code': errorCode } : {}),
-        ...(xmlRecovery ? { 'X-XML-Recovery': xmlRecovery } : {}),
-        ...(envelopeOrigem ? { 'X-Envelope-Origem': envelopeOrigem } : {}),
-      },
-      body: buffer.toString('base64'),
-      isBase64Encoded: true,
-    };
+    return new Response(upstream.body, { status: upstream.status, headers: responseHeaders });
   } catch (err) {
-    return {
-      statusCode: 502,
-      headers: corsHeaders,
-      body: JSON.stringify({ message: `Falha ao contatar a API: ${err.message}` }),
-    };
+    return new Response(JSON.stringify({ message: `Falha: ${err.message}` }), { status: 502, headers: corsHeaders });
   }
-};
+}
