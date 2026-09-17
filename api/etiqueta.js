@@ -1,6 +1,4 @@
 // netlify/functions/etiqueta.js
-// Proxy para POST https://consultadanfe.com/api/v1/danfe/etiqueta-html
-
 const API_URL = 'https://consultadanfe.com/api/v1/danfe/etiqueta-html';
 
 exports.handler = async (event) => {
@@ -8,6 +6,7 @@ exports.handler = async (event) => {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Expose-Headers': 'X-Error-Code, Retry-After',
   };
 
   if (event.httpMethod === 'OPTIONS') {
@@ -36,7 +35,9 @@ exports.handler = async (event) => {
 
     const arrayBuffer = await upstream.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
+    
     const errorCode = upstream.headers.get('X-Error-Code');
+    const retryAfter = upstream.headers.get('Retry-After');
 
     return {
       statusCode: upstream.status,
@@ -44,6 +45,7 @@ exports.handler = async (event) => {
         ...corsHeaders,
         'Content-Type': upstream.headers.get('Content-Type') || 'text/html',
         ...(errorCode ? { 'X-Error-Code': errorCode } : {}),
+        ...(retryAfter ? { 'Retry-After': retryAfter } : {}),
       },
       body: buffer.toString('base64'),
       isBase64Encoded: true,
