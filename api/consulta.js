@@ -1,33 +1,53 @@
-export const config = { runtime: 'edge' };
+// netlify/functions/consulta.js
+// Proxy para POST https://consultadanfe.com/api/v1/consulta
+// Recebe JSON do frontend, repassa para a API (server-to-server, sem CORS)
+// e devolve a resposta já com headers de CORS liberados para o próprio site.
 
-export default async function handler(req) {
+const API_URL = 'https://consultadanfe.com/api/v1/consulta';
+
+exports.handler = async (event) => {
   const corsHeaders = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Expose-Headers': 'X-Error-Code, Retry-After'
   };
 
-  if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: corsHeaders });
-  if (req.method !== 'POST') return new Response('Método não permitido', { status: 405, headers: corsHeaders });
+  if (event.httpMethod === 'OPTIONS') {
+    return { statusCode: 204, headers: corsHeaders, body: '' };
+  }
+
+  if (event.httpMethod !== 'POST') {
+    return {
+      statusCode: 405,
+      headers: corsHeaders,
+      body: JSON.stringify({ message: 'Método não permitido' }),
+    };
+  }
 
   try {
-    const upstream = await fetch('https://consultadanfe.com/api/v1/consulta', {
+    const upstream = await fetch(API_URL, {
       method: 'POST',
-      headers: { 'Content-Type': req.headers.get('Content-Type') || 'application/json' },
-      body: req.body // Repassa a requisição como stream direto
+      headers: { 'Content-Type': 'application/json' },
+      body: event.body,
     });
 
-    const responseHeaders = new Headers(corsHeaders);
-    responseHeaders.set('Content-Type', upstream.headers.get('Content-Type') || 'application/json');
-    
-    // Repassa headers de erro e rate limit
-    ['X-Error-Code', 'Retry-After'].forEach(h => {
-      if (upstream.headers.has(h)) responseHeaders.set(h, upstream.headers.get(h));
-    });
+    const text = await upstream.text();
+    const errorCode = upstream.headers.get('X-Error-Code');
 
-    return new Response(upstream.body, { status: upstream.status, headers: responseHeaders });
+    return {
+      statusCode: upstream.status,
+      headers: {
+        ...corsHeaders,
+        'Content-Type': upstream.headers.get('Content-Type') || 'application/json',
+        ...(errorCode ? { 'X-Error-Code': errorCode } : {}),
+      },
+      body: text,
+    };
   } catch (err) {
-    return new Response(JSON.stringify({ message: `Falha: ${err.message}` }), { status: 502, headers: corsHeaders });
+    return {
+      statusCode: 502,
+      headers: corsHeaders,
+      body: JSON.stringify({ message: `Falha ao contatar a API: ${err.message}` }),
+    };
   }
-}
+};

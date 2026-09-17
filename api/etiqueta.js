@@ -1,32 +1,58 @@
-export const config = { runtime: 'edge' };
+// netlify/functions/etiqueta.js
+// Proxy para POST https://consultadanfe.com/api/v1/danfe/etiqueta-html
 
-export default async function handler(req) {
+const API_URL = 'https://consultadanfe.com/api/v1/danfe/etiqueta-html';
+
+exports.handler = async (event) => {
   const corsHeaders = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Expose-Headers': 'X-Error-Code, Retry-After'
   };
 
-  if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: corsHeaders });
+  if (event.httpMethod === 'OPTIONS') {
+    return { statusCode: 204, headers: corsHeaders, body: '' };
+  }
+
+  if (event.httpMethod !== 'POST') {
+    return {
+      statusCode: 405,
+      headers: corsHeaders,
+      body: JSON.stringify({ message: 'Método não permitido' }),
+    };
+  }
 
   try {
-    const upstream = await fetch('https://consultadanfe.com/api/v1/danfe/etiqueta-html', {
+    const contentType = event.headers['content-type'] || event.headers['Content-Type'];
+    const bodyBuffer = event.isBase64Encoded
+      ? Buffer.from(event.body, 'base64')
+      : Buffer.from(event.body, 'utf8');
+
+    const upstream = await fetch(API_URL, {
       method: 'POST',
-      headers: { 'Content-Type': req.headers.get('Content-Type') },
-      body: req.body
+      headers: { 'Content-Type': contentType },
+      body: bodyBuffer,
     });
 
-    const responseHeaders = new Headers(corsHeaders);
-    // A rota de etiquetas retorna HTML
-    responseHeaders.set('Content-Type', upstream.headers.get('Content-Type') || 'text/html');
-    
-    ['X-Error-Code', 'Retry-After'].forEach(h => {
-      if (upstream.headers.has(h)) responseHeaders.set(h, upstream.headers.get(h));
-    });
+    const arrayBuffer = await upstream.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    const errorCode = upstream.headers.get('X-Error-Code');
 
-    return new Response(upstream.body, { status: upstream.status, headers: responseHeaders });
+    return {
+      statusCode: upstream.status,
+      headers: {
+        ...corsHeaders,
+        'Content-Type': upstream.headers.get('Content-Type') || 'text/html',
+        ...(errorCode ? { 'X-Error-Code': errorCode } : {}),
+      },
+      body: buffer.toString('base64'),
+      isBase64Encoded: true,
+    };
   } catch (err) {
-    return new Response(JSON.stringify({ message: `Falha: ${err.message}` }), { status: 502, headers: corsHeaders });
+    return {
+      statusCode: 502,
+      headers: corsHeaders,
+      body: JSON.stringify({ message: `Falha ao contatar a API: ${err.message}` }),
+    };
   }
-}
+};
