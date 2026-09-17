@@ -1,8 +1,4 @@
 // netlify/functions/consulta.js
-// Proxy para POST https://consultadanfe.com/api/v1/consulta
-// Recebe JSON do frontend, repassa para a API (server-to-server, sem CORS)
-// e devolve a resposta já com headers de CORS liberados para o próprio site.
-
 const API_URL = 'https://consultadanfe.com/api/v1/consulta';
 
 exports.handler = async (event) => {
@@ -10,6 +6,7 @@ exports.handler = async (event) => {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Expose-Headers': 'X-Error-Code, Retry-After', // ESSENCIAL para o front ler os headers
   };
 
   if (event.httpMethod === 'OPTIONS') {
@@ -33,6 +30,7 @@ exports.handler = async (event) => {
 
     const text = await upstream.text();
     const errorCode = upstream.headers.get('X-Error-Code');
+    const retryAfter = upstream.headers.get('Retry-After'); // Captura o Retry-After
 
     return {
       statusCode: upstream.status,
@@ -40,6 +38,7 @@ exports.handler = async (event) => {
         ...corsHeaders,
         'Content-Type': upstream.headers.get('Content-Type') || 'application/json',
         ...(errorCode ? { 'X-Error-Code': errorCode } : {}),
+        ...(retryAfter ? { 'Retry-After': retryAfter } : {}), // Repassa para o front
       },
       body: text,
     };
