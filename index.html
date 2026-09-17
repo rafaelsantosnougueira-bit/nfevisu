@@ -766,7 +766,6 @@ keysInput.addEventListener('input', updateChaveUi);
 clearChaveBtn.addEventListener('click', ()=>{ keysInput.value=''; updateChaveUi(); });
 
 // ---------- API calls ----------
-// ---------- API calls ----------
 async function consultaPorChave(chave){
   const res = await fetch(`${FN_BASE}/consulta`, {
     method:'POST',
@@ -774,8 +773,6 @@ async function consultaPorChave(chave){
     body: JSON.stringify({ chave, format:'json' })
   });
   const errorCode = res.headers.get('X-Error-Code');
-  const retryAfter = res.headers.get('Retry-After'); // Captura o tempo de pausa
-  
   let data = null;
   try { data = await res.json(); } catch(_e){}
   if (!res.ok){
@@ -783,7 +780,6 @@ async function consultaPorChave(chave){
     const err = new Error(msg);
     err.code = errorCode || data?.error;
     err.status = res.status;
-    err.retryAfter = retryAfter; // Guarda o tempo no erro
     throw err;
   }
   return data;
@@ -797,8 +793,6 @@ async function danfeViaXml(file){
   const errorCode = res.headers.get('X-Error-Code');
   const xmlRecovery = res.headers.get('X-XML-Recovery');
   const envelopeOrigem = res.headers.get('X-Envelope-Origem');
-  const retryAfter = res.headers.get('Retry-After'); // Captura o tempo de pausa
-  
   let data = null;
   try { data = await res.json(); } catch(_e){}
   if (!res.ok){
@@ -806,30 +800,12 @@ async function danfeViaXml(file){
     const err = new Error(msg);
     err.code = errorCode || data?.error;
     err.status = res.status;
-    err.retryAfter = retryAfter; // Guarda o tempo no erro
     throw err;
   }
   return { data, xmlRecovery, envelopeOrigem };
 }
-// ---------- Processing pipeline ----------
-  // ---------- Pré-cache na API ----------
-async function iniciarPreCache(chaves) {
-  if (!chaves || chaves.length === 0) return;
-  
-  const formData = new FormData();
-  const conteudoTexto = chaves.join('\n'); 
-  const blob = new Blob([conteudoTexto], { type: 'text/plain' });
-  formData.append('xml', blob, 'lista_chaves.txt');
 
-  try {
-    await fetch(`${FN_BASE}/danfe`, {
-      method: 'POST',
-      body: formData
-    });
-  } catch (err) {
-    console.error("Aviso: Falha ao iniciar pré-cache", err);
-  }
-}
+// ---------- Processing pipeline ----------
 async function processAll(){
   if (isProcessing) return;
   const keys = currentMode === 'chave' ? parseKeys(keysInput.value) : [];
@@ -879,54 +855,28 @@ async function processAll(){
     results.push(partial);
     renderResults();
 
-    let sucesso = false;
-    let tentativas = 0;
-
-    // Loop que protege contra o 429: se tomar rate limit, pausa a fila e retenta a mesma nota
-    while (!sucesso && tentativas < 3) {
-      try{
-        if (job.type === 'chave'){
-          const data = await consultaPorChave(job.chave);
-          applySuccess(partial, data);
-        } else {
-          const { data, xmlRecovery, envelopeOrigem } = await danfeViaXml(job.file);
-          applySuccess(partial, data);
-          if (xmlRecovery) partial.flags.push('XML recuperado via chave');
-          if (envelopeOrigem) partial.flags.push(`Envelope: ${envelopeOrigem}`);
-        }
-        sucesso = true; // Se chegou aqui, não deu erro!
-      } catch(err){
-        if (err.status === 429) {
-          // A API mandou parar. Lemos os segundos que ela pediu ou usamos 15s de padrão
-          const waitSecs = parseInt(err.retryAfter || '15', 10);
-          
-          partial.message = `Limite! Pausando fila por ${waitSecs}s...`;
-          progressText.textContent = `Aguardando liberação da API (${waitSecs}s)...`;
-          renderResults();
-          
-          // Pausa a execução de TUDO por X segundos
-          await new Promise(r => setTimeout(r, waitSecs * 1000));
-          
-          tentativas++;
-          partial.message = 'Retentando...';
-          progressText.textContent = 'Processando...';
-        } else {
-          // Se for outro erro (ex: chave inválida, 404), marca como erro e sai do while
-          partial.status = 'err';
-          partial.message = err.message || 'Falha ao processar';
-          break; 
-        }
+    try{
+      if (job.type === 'chave'){
+        const data = await consultaPorChave(job.chave);
+        applySuccess(partial, data);
+      } else {
+        const { data, xmlRecovery, envelopeOrigem } = await danfeViaXml(job.file);
+        applySuccess(partial, data);
+        if (xmlRecovery) partial.flags.push('XML recuperado via chave');
+        if (envelopeOrigem) partial.flags.push(`Envelope: ${envelopeOrigem}`);
       }
+    } catch(err){
+      partial.status = 'err';
+      partial.message = err.message || 'Falha ao processar';
+      if (err.status === 429) partial.message = 'Limite de requisições atingido — tente novamente em instantes.';
     }
 
     renderResults();
     progressFill.style.width = `${Math.round(((i+1)/jobs.length)*100)}%`;
     progressCount.textContent = `${i+1} / ${jobs.length}`;
     
-    // Intervalo de segurança apenas se deu sucesso
-    if (i < jobs.length-1 && partial.status === 'ok') {
-        await new Promise(r=>setTimeout(r, 220)); 
-    }
+    // Você pode manter os seus 220ms aqui agora, pois como as notas estarão no cache, não vai estourar o limite!
+    if (i < jobs.length-1) await new Promise(r=>setTimeout(r, 220)); 
   }
 
   progressText.textContent = 'Concluído';
@@ -935,6 +885,69 @@ async function processAll(){
   updateChaveUi();
   updateToolbarButtons();
 }
+
+async function processAll(){
+  if (isProcessing) return;
+  const keys = currentMode === 'chave' ? parseKeys(keysInput.value) : [];
+  const files = currentMode === 'xml' ? uploadedFiles : [];
+  const jobs = [
+    ...files.map(f=>({ type:'xml', file:f, label:f.name })),
+    ...keys.map(k=>({ type:'chave', chave:k, label:k }))
+  ];
+  if (!jobs.length) return;
+
+  isProcessing = true;
+  updateXmlUi();
+  updateChaveUi();
+  progressWrap.classList.add('show');
+  progressFill.style.width = '0%';
+  progressCount.textContent = `0 / ${jobs.length}`;
+  progressText.textContent = 'Processando…';
+
+  results.forEach(r=>{ if(r.blobUrl) URL.revokeObjectURL(r.blobUrl); });
+  results = [];
+  renderResults();
+
+  for (let i=0;i<jobs.length;i++){
+    const job = jobs[i];
+    const id = `job-${i}-${Date.now()}`;
+    const partial = {
+      id, label: job.label, source: job.type,
+      status: 'pending', tipo:null, chave: job.type==='chave' ? job.chave : null,
+      pdfBase64:null, blobUrl:null, message:'Consultando…', flags:[]
+    };
+    results.push(partial);
+    renderResults();
+
+    try{
+      if (job.type === 'chave'){
+        const data = await consultaPorChave(job.chave);
+        applySuccess(partial, data);
+      } else {
+        const { data, xmlRecovery, envelopeOrigem } = await danfeViaXml(job.file);
+        applySuccess(partial, data);
+        if (xmlRecovery) partial.flags.push('XML recuperado via chave');
+        if (envelopeOrigem) partial.flags.push(`Envelope: ${envelopeOrigem}`);
+      }
+    } catch(err){
+      partial.status = 'err';
+      partial.message = err.message || 'Falha ao processar';
+      if (err.status === 429) partial.message = 'Limite de requisições atingido — tente novamente em instantes.';
+    }
+
+    renderResults();
+    progressFill.style.width = `${Math.round(((i+1)/jobs.length)*100)}%`;
+    progressCount.textContent = `${i+1} / ${jobs.length}`;
+    if (i < jobs.length-1) await new Promise(r=>setTimeout(r, 220));
+  }
+
+  progressText.textContent = 'Concluído';
+  isProcessing = false;
+  updateXmlUi();
+  updateChaveUi();
+  updateToolbarButtons();
+}
+
 function applySuccess(partial, data){
   partial.status = 'ok';
   partial.tipo = data.tipo || null;
