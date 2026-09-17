@@ -928,32 +928,6 @@ async function processAll(){
         await new Promise(r=>setTimeout(r, 220)); 
     }
   }
-    results.push(partial);
-    renderResults();
-
-    try{
-      if (job.type === 'chave'){
-        const data = await consultaPorChave(job.chave);
-        applySuccess(partial, data);
-      } else {
-        const { data, xmlRecovery, envelopeOrigem } = await danfeViaXml(job.file);
-        applySuccess(partial, data);
-        if (xmlRecovery) partial.flags.push('XML recuperado via chave');
-        if (envelopeOrigem) partial.flags.push(`Envelope: ${envelopeOrigem}`);
-      }
-    } catch(err){
-      partial.status = 'err';
-      partial.message = err.message || 'Falha ao processar';
-      if (err.status === 429) partial.message = 'Limite de requisições atingido — tente novamente em instantes.';
-    }
-
-    renderResults();
-    progressFill.style.width = `${Math.round(((i+1)/jobs.length)*100)}%`;
-    progressCount.textContent = `${i+1} / ${jobs.length}`;
-    
-    // Você pode manter os seus 220ms aqui agora, pois como as notas estarão no cache, não vai estourar o limite!
-    if (i < jobs.length-1) await new Promise(r=>setTimeout(r, 220)); 
-  }
 
   progressText.textContent = 'Concluído';
   isProcessing = false;
@@ -961,7 +935,6 @@ async function processAll(){
   updateChaveUi();
   updateToolbarButtons();
 }
-
 function applySuccess(partial, data){
   partial.status = 'ok';
   partial.tipo = data.tipo || null;
